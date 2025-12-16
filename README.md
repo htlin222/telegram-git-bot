@@ -1,57 +1,60 @@
-# Telegram Git Bot
+# Telegram git bot
 
-� Telegram `��L Git � Bot Agent
+A Telegram bot for remote Git operations.
 
-## ��
+## Features
 
-- ��U0�`��L Git �
-- /��_hhomeoffice
-- �h���P6�}
-  �(
-  P
-- �Ճ� Git repositories
+- Remote Git command execution from anywhere
+- Multi-machine support (home, office)
+- Security: path restrictions, command allowlist, user permissions
+- Automatic scan for Git repositories
 
-## ���
+## Quick start
 
-### 1. �ݝ�
+### 1. Install dependencies
 
 ```bash
 uv sync
 ```
 
-### 2. -����x
+### 2. Set environment variables
 
 ```bash
 cp .env.example .env
-# �/ .envke`� Telegram Bot Token
+# Edit .env with your Telegram Bot Token
 ```
 
-### 3. -� config.json
+### 3. Configure config.json
+
+```bash
+cp config.json.example config.json
+# Edit config.json with your settings
+```
 
 ```json
 {
     "machine_name": "home",
     "allowed_paths": ["~/"],
-    "allowed_user_ids": [`�_Telegram_User_ID],
+    "allowed_user_ids": [YOUR_TELEGRAM_USER_ID],
     "allowed_git_commands": ["status", "pull", "push", "fetch", "log", "diff", "branch"]
 }
 ```
 
-### 4. �L
+### 4. Run
 
 ```bash
 uv run main.py
 ```
 
-## (�
+## Usage
 
-( Telegram -
+In Telegram:
 
 ```
 /git <machine> <path> <command>
 ```
 
-ċ
+Examples:
 
 ```
 /git home ~/projects/myapp status
@@ -59,19 +62,19 @@ uv run main.py
 /git home ~/projects/myapp log -5 --oneline
 ```
 
-## �h
+## Commands
 
-| �         | �        |
-| --------- | -------- |
-| `/start`  | ��(      |
-| `/help`   | (�       |
-| `/status` | Bot �K   |
-| `/list`   | �@ Git H |
-| `/git`    | �L Git � |
+| Command   | Description         |
+| --------- | ------------------- |
+| `/start`  | Start bot           |
+| `/help`   | Display help        |
+| `/status` | Bot status          |
+| `/list`   | List Git repos      |
+| `/git`    | Execute Git command |
 
-## ��
+## Documentation
 
-�tYx��https://htlin222.github.io/telegram-git-bot/
+Full tutorial: https://htlin222.github.io/telegram-git-bot/
 
 ## License
 
