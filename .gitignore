@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Quarto
+/.quarto/
+index_files/
+index.html
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# Local config (contains user IDs)
+config.json

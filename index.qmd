@@ -1,0 +1,961 @@
+---
+title: "Telegram Git Bot 完整教學"
+subtitle: "從 Telegram 遠端執行 Git 指令"
+author: "Claude"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "目錄"
+    number-sections: true
+    code-fold: false
+    code-copy: true
+    highlight-style: github
+    theme: cosmo
+---
+
+## 簡介
+
+這份教學會帶你建立一個 Telegram Bot，讓你可以從手機或電腦遠端在你的機器上執行 Git 指令。
+
+### 架構概覽
+
+```
+你在 Telegram 輸入: /git home ~/projects/app pull
+                        ↓
+              Telegram 雲端轉發到你的 Bot
+                        ↓
+         你的機器上的 Bot Agent 收到指令
+                        ↓
+         檢查資料夾存在 → 執行 git pull
+                        ↓
+              回傳結果到 Telegram
+```
+
+### 功能特色
+
+- ✅ 從任何地方遠端執行 Git 指令
+- ✅ 支援多台機器（home、office）
+- ✅ 安全檢查（路徑限制、指令白名單、使用者權限）
+- ✅ 自動掃描 Git repositories
+
+---
+
+## 建立 Telegram Bot
+
+### 找 BotFather
+
+打開 Telegram App，在搜尋欄輸入 `@BotFather`，開始對話。
+
+### 建立新 Bot
+
+發送：
+
+```
+/newbot
+```
+
+BotFather 會問你：
+
+1. **Bot 名稱**（顯示名稱）：例如 `My Git Bot`
+2. **Bot username**（必須以 bot 結尾）：例如 `yourname_git_bot`
+
+成功後會給你一個 Token，格式像這樣：
+
+```
+123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+```
+
+::: {.callout-important}
+## 重要
+複製並保存這個 Token！之後會用到。
+:::
+
+### 設定 Commands 選單
+
+對 `@BotFather` 發送：
+
+```
+/setcommands
+```
+
+選擇你的 Bot，然後貼上：
+
+```
+git - 執行 git 指令
+status - 查看 bot 狀態
+help - 使用說明
+list - 列出允許的專案資料夾
+```
+
+### 取得你的 User ID
+
+搜尋 `@userinfobot`，對它發送任何訊息，它會回傳你的 User ID：
+
+```
+Id: 123456789
+```
+
+::: {.callout-note}
+記下這個 ID，用來設定誰可以使用你的 Bot。
+:::
+
+### 設定 Bot Logo（選擇性）
+
+對 `@BotFather` 發送：
+
+```
+/setuserpic
+```
+
+選擇你的 Bot，然後上傳一張圖片作為頭像。
+
+---
+
+## 安裝 uv
+
+`uv` 是一個現代化的 Python 套件管理工具，速度快又好用。
+
+### macOS / Linux
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 重新載入 Shell
+
+```bash
+source ~/.bashrc  # 或 ~/.zshrc
+```
+
+### 確認安裝成功
+
+```bash
+uv --version
+```
+
+應該會看到版本號，例如 `uv 0.5.x`。
+
+---
+
+## 建立專案
+
+### 建立資料夾
+
+```bash
+mkdir -p ~/telegram-git-bot
+cd ~/telegram-git-bot
+```
+
+### 初始化 uv 專案
+
+```bash
+uv init
+```
+
+這會建立以下結構：
+
+```
+telegram-git-bot/
+├── .python-version
+├── main.py
+├── pyproject.toml
+└── README.md
+```
+
+### 加入依賴套件
+
+```bash
+uv add python-telegram-bot python-dotenv
+```
+
+---
+
+## 建立設定檔
+
+### config.json
+
+```bash
+nano config.json
+```
+
+貼上以下內容：
+
+```json
+{
+    "machine_name": "home",
+    "allowed_paths": ["~/"],
+    "allowed_user_ids": [123456789],
+    "allowed_git_commands": [
+        "status",
+        "pull",
+        "push",
+        "fetch",
+        "add",
+        "commit",
+        "log",
+        "diff",
+        "branch",
+        "checkout",
+        "merge",
+        "stash"
+    ],
+    "command_timeout": 60,
+    "max_output_length": 3500
+}
+```
+
+::: {.callout-warning}
+## 設定說明
+- `machine_name`: 這台機器的名稱，用於區分多台機器
+- `allowed_paths`: 允許操作的路徑（`~/` 表示 home 目錄下的所有子資料夾）
+- `allowed_user_ids`: 把 `123456789` 換成你的 Telegram User ID
+- `allowed_git_commands`: 允許執行的 git 指令
+:::
+
+### .env
+
+```bash
+nano .env
+```
+
+貼上（換成你的 Token）：
+
+```bash
+TELEGRAM_BOT_TOKEN=你的Bot_Token
+```
+
+### .gitignore
+
+```bash
+nano .gitignore
+```
+
+```
+.env
+__pycache__/
+*.pyc
+.venv/
+```
+
+---
+
+## 建立 Bot 程式
+
+編輯 `main.py`：
+
+```bash
+nano main.py
+```
+
+刪除原有內容，貼上以下完整程式碼：
+
+```python
+#!/usr/bin/env python3
+"""
+Telegram Git Bot Agent
+=====================
+從 Telegram 遠端執行 Git 指令
+
+使用方式:
+    /git <machine> <path> <command>
+    /git home ~/projects/myapp pull
+    /git office ~/work/api status
+"""
+
+import json
+import logging
+import os
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+# ============================================================
+# 設定
+# ============================================================
+
+load_dotenv()
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+CONFIG_FILE = Path(__file__).parent / "config.json"
+
+
+@dataclass
+class Config:
+    """Bot 設定"""
+
+    machine_name: str
+    allowed_paths: list[Path]
+    allowed_user_ids: list[int]
+    allowed_git_commands: list[str]
+    command_timeout: int
+    max_output_length: int
+
+    @classmethod
+    def load(cls, path: Path) -> "Config":
+        """從 JSON 檔載入設定"""
+        with open(path) as f:
+            data = json.load(f)
+
+        return cls(
+            machine_name=data["machine_name"],
+            allowed_paths=[Path(p).expanduser().resolve() for p in data["allowed_paths"]],
+            allowed_user_ids=data["allowed_user_ids"],
+            allowed_git_commands=data["allowed_git_commands"],
+            command_timeout=data.get("command_timeout", 60),
+            max_output_length=data.get("max_output_length", 3500),
+        )
+
+
+config = Config.load(CONFIG_FILE)
+
+
+# ============================================================
+# 安全檢查
+# ============================================================
+
+
+def is_user_allowed(user_id: int) -> bool:
+    """檢查使用者是否有權限"""
+    if not config.allowed_user_ids:
+        return True
+    return user_id in config.allowed_user_ids
+
+
+def is_path_allowed(target_path: Path) -> bool:
+    """檢查路徑是否在允許範圍內（但不能是 ~ 本身）"""
+    try:
+        resolved = target_path.expanduser().resolve()
+        home = Path.home().resolve()
+
+        # 不允許直接操作 home 目錄本身
+        if resolved == home:
+            return False
+
+        # 允許 home 底下的任何子資料夾
+        for allowed in config.allowed_paths:
+            if resolved == allowed or allowed in resolved.parents:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def is_valid_git_command(cmd: str) -> tuple[bool, str]:
+    """檢查是否為允許的 git 指令"""
+    cmd = cmd.strip()
+    if not cmd:
+        return False, ""
+    first_word = cmd.split()[0]
+    return first_word in config.allowed_git_commands, first_word
+
+
+def is_git_repo(path: Path) -> bool:
+    """檢查是否為 git repository"""
+    git_dir = path / ".git"
+    return git_dir.exists() and git_dir.is_dir()
+
+
+def sanitize_input(text: str) -> str:
+    """移除危險字元"""
+    return re.sub(r"[;&|`$(){}\\]", "", text)
+
+
+def find_git_repos(base_path: Path, max_depth: int = 3) -> list[Path]:
+    """遞迴尋找 git repositories"""
+    repos = []
+
+    def search(path: Path, depth: int):
+        if depth > max_depth:
+            return
+        try:
+            if (path / ".git").is_dir():
+                repos.append(path)
+                return
+            for child in path.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    search(child, depth + 1)
+        except PermissionError:
+            pass
+
+    search(base_path, 0)
+    return sorted(repos)
+
+
+# ============================================================
+# Git 執行
+# ============================================================
+
+
+@dataclass
+class GitResult:
+    """Git 指令執行結果"""
+
+    success: bool
+    output: str
+    return_code: int
+    error: str | None = None
+
+
+def execute_git_command(path: Path, git_cmd: str) -> GitResult:
+    """在指定路徑執行 git 指令"""
+    full_command = f"git {git_cmd}"
+
+    try:
+        result = subprocess.run(
+            full_command,
+            shell=True,
+            cwd=str(path),
+            capture_output=True,
+            text=True,
+            timeout=config.command_timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+        output = result.stdout.strip() or result.stderr.strip() or "(無輸出)"
+
+        if len(output) > config.max_output_length:
+            output = output[: config.max_output_length] + "\n... (已截斷)"
+
+        return GitResult(
+            success=result.returncode == 0,
+            output=output,
+            return_code=result.returncode,
+        )
+
+    except subprocess.TimeoutExpired:
+        return GitResult(
+            success=False,
+            output="",
+            return_code=-1,
+            error=f"超時 ({config.command_timeout}秒)",
+        )
+    except Exception as e:
+        return GitResult(
+            success=False,
+            output="",
+            return_code=-1,
+            error=str(e),
+        )
+
+
+# ============================================================
+# Telegram Handlers
+# ============================================================
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /start"""
+    user = update.effective_user
+    user_id = user.id
+
+    if not is_user_allowed(user_id):
+        await update.message.reply_text(
+            f"❌ 沒有權限\n\n你的 User ID: `{user_id}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text(
+        f"👋 嗨 {user.first_name}！\n\n"
+        f"我是 `{config.machine_name}` 的 Git Bot\n\n"
+        f"**使用方式:**\n"
+        f"`/git {config.machine_name} <path> <command>`\n\n"
+        f"**範例:**\n"
+        f"```\n"
+        f"/git {config.machine_name} ~/projects/app status\n"
+        f"/git {config.machine_name} ~/projects/app pull\n"
+        f"```\n\n"
+        f"輸入 /help 查看說明",
+        parse_mode="Markdown",
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /help"""
+    if not is_user_allowed(update.effective_user.id):
+        return
+
+    commands = ", ".join(config.allowed_git_commands)
+
+    await update.message.reply_text(
+        f"📖 **Git Bot 使用說明**\n\n"
+        f"**格式:**\n"
+        f"`/git <machine> <path> <git_command>`\n\n"
+        f"**允許的 git 指令:**\n"
+        f"`{commands}`\n\n"
+        f"**其他指令:**\n"
+        f"• /status - Bot 狀態\n"
+        f"• /list - 列出專案\n\n"
+        f"**範例:**\n"
+        f"```\n"
+        f"/git {config.machine_name} ~/projects/app status\n"
+        f"/git {config.machine_name} ~/projects/app pull\n"
+        f"/git {config.machine_name} ~/projects/app log -5 --oneline\n"
+        f"```",
+        parse_mode="Markdown",
+    )
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /status"""
+    user_id = update.effective_user.id
+
+    if not is_user_allowed(user_id):
+        await update.message.reply_text(f"❌ 沒有權限 (ID: `{user_id}`)", parse_mode="Markdown")
+        return
+
+    paths_list = "\n".join(f"  • `{p}`" for p in config.allowed_paths)
+
+    await update.message.reply_text(
+        f"🤖 **Git Bot 狀態**\n\n"
+        f"**機器:** `{config.machine_name}`\n"
+        f"**狀態:** 🟢 運行中\n\n"
+        f"**允許路徑:**\n{paths_list}",
+        parse_mode="Markdown",
+    )
+
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /list"""
+    if not is_user_allowed(update.effective_user.id):
+        return
+
+    await update.message.reply_text("🔍 掃描中...")
+
+    all_repos = []
+    for base in config.allowed_paths:
+        if base.exists():
+            repos = find_git_repos(base)
+            all_repos.extend(repos)
+
+    if not all_repos:
+        await update.message.reply_text(
+            f"📁 沒有找到 Git repository\n\n"
+            f"允許的路徑:\n"
+            + "\n".join(f"  • `{p}`" for p in config.allowed_paths),
+            parse_mode="Markdown",
+        )
+        return
+
+    repos_text = "\n".join(f"  • `{r}`" for r in all_repos[:30])
+    if len(all_repos) > 30:
+        repos_text += f"\n  ... 還有 {len(all_repos) - 30} 個"
+
+    await update.message.reply_text(
+        f"📁 **找到 {len(all_repos)} 個 Git Repo:**\n\n{repos_text}",
+        parse_mode="Markdown",
+    )
+
+
+async def git_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /git"""
+    user_id = update.effective_user.id
+
+    if not is_user_allowed(user_id):
+        await update.message.reply_text(
+            f"❌ 沒有權限\n\nUser ID: `{user_id}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    args = context.args
+
+    if not args or len(args) < 3:
+        await update.message.reply_text(
+            f"📖 **使用方式:**\n"
+            f"`/git <machine> <path> <command>`\n\n"
+            f"**範例:**\n"
+            f"```\n"
+            f"/git {config.machine_name} ~/projects/app pull\n"
+            f"/git {config.machine_name} ~/projects/app status\n"
+            f"```\n\n"
+            f"輸入 /list 查看專案",
+            parse_mode="Markdown",
+        )
+        return
+
+    machine = args[0]
+    path_str = args[1]
+    git_cmd = " ".join(args[2:])
+
+    # 不是這台機器，忽略
+    if machine.lower() != config.machine_name.lower():
+        return
+
+    processing_msg = await update.message.reply_text(
+        f"🔄 `{config.machine_name}` 處理中...",
+        parse_mode="Markdown",
+    )
+
+    # 清理輸入
+    path_str = sanitize_input(path_str)
+    git_cmd = sanitize_input(git_cmd)
+
+    # 驗證指令
+    is_valid, first_word = is_valid_git_command(git_cmd)
+    if not is_valid:
+        await processing_msg.edit_text(
+            f"❌ 不允許的指令: `{first_word or '(空)'}`\n\n"
+            f"允許: `{', '.join(config.allowed_git_commands)}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 解析路徑
+    try:
+        target_path = Path(path_str).expanduser().resolve()
+    except Exception:
+        await processing_msg.edit_text(f"❌ 無效路徑: `{path_str}`", parse_mode="Markdown")
+        return
+
+    # 檢查存在
+    if not target_path.exists():
+        suggestions = []
+        for base in config.allowed_paths:
+            if base.exists():
+                repos = find_git_repos(base, max_depth=2)
+                suggestions.extend(repos[:5])
+
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n\n**可能你要找:**\n" + "\n".join(f"  • `{s}`" for s in suggestions[:5])
+
+        await processing_msg.edit_text(
+            f"❌ 資料夾不存在: `{target_path}`{suggestion_text}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 檢查是目錄
+    if not target_path.is_dir():
+        await processing_msg.edit_text(f"❌ 不是資料夾: `{target_path}`", parse_mode="Markdown")
+        return
+
+    # 檢查允許範圍
+    if not is_path_allowed(target_path):
+        paths_list = "\n".join(f"  • `{p}`" for p in config.allowed_paths)
+        await processing_msg.edit_text(
+            f"❌ 路徑不在允許範圍: `{target_path}`\n\n**允許:**\n{paths_list}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 檢查 git repo
+    if not is_git_repo(target_path):
+        await processing_msg.edit_text(
+            f"❌ 不是 Git Repo: `{target_path}`\n\n💡 沒有 `.git` 目錄",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 執行
+    logger.info(f"User {user_id}: git {git_cmd} in {target_path}")
+    result = execute_git_command(target_path, git_cmd)
+
+    project_name = target_path.name
+
+    if result.error:
+        await processing_msg.edit_text(
+            f"❌ **{config.machine_name}** / `{project_name}`\n\n錯誤: {result.error}",
+            parse_mode="Markdown",
+        )
+    elif result.success:
+        await processing_msg.edit_text(
+            f"✅ **{config.machine_name}** / `{project_name}`\n"
+            f"📍 `git {git_cmd}`\n\n"
+            f"```\n{result.output}\n```",
+            parse_mode="Markdown",
+        )
+    else:
+        await processing_msg.edit_text(
+            f"⚠️ **{config.machine_name}** / `{project_name}`\n"
+            f"📍 `git {git_cmd}` (exit: {result.return_code})\n\n"
+            f"```\n{result.output}\n```",
+            parse_mode="Markdown",
+        )
+
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """未知指令"""
+    if not is_user_allowed(update.effective_user.id):
+        return
+    await update.message.reply_text("❓ 未知指令，輸入 /help 查看說明")
+
+
+# ============================================================
+# 主程式
+# ============================================================
+
+
+def main() -> None:
+    """啟動 Bot"""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+    if not token:
+        logger.error("❌ TELEGRAM_BOT_TOKEN 未設定！")
+        logger.error("請在 .env 設定: TELEGRAM_BOT_TOKEN=your_token")
+        return
+
+    logger.info(f"🚀 Starting Git Bot on [{config.machine_name}]")
+    logger.info(f"📁 Allowed paths: {config.allowed_paths}")
+    logger.info(f"👤 Allowed users: {config.allowed_user_ids}")
+
+    application = Application.builder().token(token).build()
+
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("list", list_command))
+    application.add_handler(CommandHandler("git", git_command))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## 測試執行
+
+### 手動執行
+
+```bash
+cd ~/telegram-git-bot
+uv run main.py
+```
+
+應該會看到：
+
+```
+2024-xx-xx - INFO - 🚀 Starting Git Bot on [home]
+2024-xx-xx - INFO - 📁 Allowed paths: [PosixPath('/Users/xxx')]
+2024-xx-xx - INFO - 👤 Allowed users: [123456789]
+```
+
+### 在 Telegram 測試
+
+1. 打開 Telegram，搜尋你的 Bot（`@yourname_git_bot`）
+2. 點「Start」或發送 `/start`
+3. 試試這些指令：
+
+| 指令 | 功能 |
+|------|------|
+| `/start` | 開始 |
+| `/help` | 使用說明 |
+| `/status` | Bot 狀態 |
+| `/list` | 列出所有 Git 專案 |
+| `/git home ~/projects/app status` | 執行 git status |
+| `/git home ~/projects/app pull` | 執行 git pull |
+
+---
+
+## 設定開機自動啟動（macOS）
+
+macOS 使用 `launchd` 和 `plist` 檔案來管理服務。
+
+### 確認 uv 路徑
+
+```bash
+which uv
+```
+
+記下輸出的路徑，例如 `/opt/homebrew/bin/uv`。
+
+### 建立 plist 檔案
+
+```bash
+nano ~/Library/LaunchAgents/com.telegram-git-bot.plist
+```
+
+貼上以下內容（**記得把路徑換成你的**）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.telegram-git-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/你的使用者名稱/telegram-git-bot</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/你的使用者名稱/telegram-git-bot/bot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/你的使用者名稱/telegram-git-bot/bot-error.log</string>
+</dict>
+</plist>
+```
+
+::: {.callout-important}
+## 重要
+把 `/opt/homebrew/bin/uv` 換成 `which uv` 的輸出，把 `你的使用者名稱` 換成 `whoami` 的輸出。
+:::
+
+### 載入服務
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram-git-bot.plist
+```
+
+### 常用指令
+
+| 動作 | 指令 |
+|------|------|
+| 啟動 | `launchctl start com.telegram-git-bot` |
+| 停止 | `launchctl stop com.telegram-git-bot` |
+| 查看狀態 | `launchctl list \| grep telegram` |
+| 卸載 | `launchctl bootout gui/$(id -u)/com.telegram-git-bot` |
+| 看 log | `tail -f ~/telegram-git-bot/bot.log` |
+| 看錯誤 | `tail -f ~/telegram-git-bot/bot-error.log` |
+
+---
+
+## 多台機器設定
+
+如果你有多台機器（例如 home 和 office），在每台機器上：
+
+1. 重複 @sec-建立專案 到 @sec-設定開機自動啟動macos 的步驟
+2. 只需要修改 `config.json` 的 `machine_name`：
+
+**Home 機器：**
+```json
+{
+    "machine_name": "home",
+    ...
+}
+```
+
+**Office 機器：**
+```json
+{
+    "machine_name": "office",
+    ...
+}
+```
+
+使用時指定機器名稱：
+
+```
+/git home ~/projects/app pull
+/git office ~/work/api status
+```
+
+---
+
+## 使用範例
+
+```
+/git home ~/projects/myapp status               # 查看狀態
+/git home ~/projects/myapp pull                 # 拉取最新
+/git home ~/projects/myapp add .                # 加入所有變更
+/git home ~/projects/myapp commit -m "update"   # 提交
+/git home ~/projects/myapp push                 # 推送
+/git home ~/projects/myapp log -5 --oneline     # 看最近 5 筆 log
+/git home ~/projects/myapp branch               # 列出分支
+/git home ~/projects/myapp checkout main        # 切換到 main 分支
+```
+
+---
+
+## 疑難排解
+
+### Bot 沒有回應
+
+1. 確認 Bot 程式有在執行
+2. 確認 Token 正確
+3. 檢查 log：`cat ~/telegram-git-bot/bot-error.log`
+
+### 沒有權限
+
+確認 `config.json` 的 `allowed_user_ids` 有包含你的 Telegram User ID。
+
+### 找不到資料夾
+
+1. 用 `/list` 查看有哪些可用的專案
+2. 確認路徑拼寫正確
+3. 確認路徑在 `allowed_paths` 範圍內
+
+### launchd 載入失敗
+
+1. 確認 plist 語法正確：`plutil -lint ~/Library/LaunchAgents/com.telegram-git-bot.plist`
+2. 確認所有路徑都正確（uv 路徑、專案路徑、使用者名稱）
+3. 確認檔案權限：`chmod 644 ~/Library/LaunchAgents/com.telegram-git-bot.plist`
+
+---
+
+## 安全建議
+
+1. **限制使用者**：只允許特定的 Telegram User ID 使用
+2. **限制路徑**：不要開放整個 `~/`，只開放需要的路徑
+3. **限制指令**：移除危險的 git 指令（如 `reset --hard`）
+4. **保護 Token**：不要把 `.env` 加入 git
+
+---
+
+## 專案結構總覽
+
+```
+~/telegram-git-bot/
+├── .env                 # Token（不要 commit！）
+├── .gitignore           # 忽略 .env 和快取
+├── .python-version      # Python 版本
+├── .venv/               # 虛擬環境
+├── bot.log              # 執行 log
+├── bot-error.log        # 錯誤 log
+├── config.json          # Bot 設定
+├── main.py              # 主程式
+├── pyproject.toml       # uv 專案設定
+├── README.md            # 說明文件
+└── uv.lock              # 依賴鎖定
+```
+
+---
+
+## 完成！🎉
+
+現在你可以從任何地方，用 Telegram 遠端執行 Git 指令了！
+
+有問題歡迎回來問 😄

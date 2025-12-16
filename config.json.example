@@ -1,0 +1,21 @@
+{
+    "machine_name": "home",
+    "allowed_paths": ["~/"],
+    "allowed_user_ids": [123456789],
+    "allowed_git_commands": [
+        "status",
+        "pull",
+        "push",
+        "fetch",
+        "add",
+        "commit",
+        "log",
+        "diff",
+        "branch",
+        "checkout",
+        "merge",
+        "stash"
+    ],
+    "command_timeout": 60,
+    "max_output_length": 3500
+}
